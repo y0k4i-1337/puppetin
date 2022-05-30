@@ -11,5 +11,8 @@
   "main": "puppetin.js",
   "repository": "https://github.com/yok4i/puppetin",
   "author": "Mayk <7395296+yok4i@users.noreply.github.com>",
-  "license": "MIT"
+  "license": "MIT",
+  "devDependencies": {
+    "puppeteer-extra-plugin-repl": "^2.3.0"
+  }
 }
