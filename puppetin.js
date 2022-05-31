@@ -6,10 +6,40 @@ const puppeteer = require('puppeteer-extra')
 const StealthPlugin = require('puppeteer-extra-plugin-stealth')
 
 puppeteer.use(StealthPlugin())
-puppeteer.use(require('puppeteer-extra-plugin-repl')())
+// puppeteer.use(require('puppeteer-extra-plugin-repl')())
 
 const { Command } = require('commander');
 const program = new Command();
+
+const { CsvConverter } = require('json2csv');
+
+String.prototype.removeDiacritics = function () {
+  var diacritics = [
+    [/[\300-\306]/g, 'A'],
+    [/[\340-\346]/g, 'a'],
+    [/[\310-\313]/g, 'E'],
+    [/[\350-\353]/g, 'e'],
+    [/[\314-\317]/g, 'I'],
+    [/[\354-\357]/g, 'i'],
+    [/[\322-\330]/g, 'O'],
+    [/[\362-\370]/g, 'o'],
+    [/[\331-\334]/g, 'U'],
+    [/[\371-\374]/g, 'u'],
+    [/[\321]/g, 'N'],
+    [/[\361]/g, 'n'],
+    [/[\307]/g, 'C'],
+    [/[\347]/g, 'c'],
+  ];
+  var s = this;
+  for (var i = 0; i < diacritics.length; i++) {
+    s = s.replace(diacritics[i][0], diacritics[i][1]);
+  }
+  return s;
+}
+
+function normalize(s) {
+  return s.removeDiacritics();
+}
 
 program
   .name('puppetin')
@@ -20,27 +50,70 @@ program
   .option('-u, --username <string>', 'username used to authenticate')
   .option('-p, --password <string>', 'password used to authenticate')
   .option('-c, --cookie <string>', 'provide li_at cookie instead of credentials')
-  .option('-u, --url <string>', 'URL from where to start scraping')
-  .requiredOption('-s, --search <string>', 'search string');
+  .option('-u, --url <string>', 'Custom URL from where to start scraping')
+  .option('-m, --maxpages <int>', 'Maximum number of pages to scrap', 100)
+  .option('-x, --proxy <host:port>', 'Send requests through proxy')
+  .option('-t, --timeout <milliseconds>', 'Set global timeout', 30000)
+  .option('-v, --verbose', 'Show detailed information', false)
+  .option('-f, --format <string>', 'Output format (json, csv)', 'json')
+  .option('-o, --output <string>', 'Output file')
+  .option('--headful', 'Launch browser in headful mode', false)
+  .option('--slowMo <milliseconds>', 'Slows down Puppeteer operations by the specified amount of time')
+  .requiredOption('-s, --search <string>', 'search string')
+  .requiredOption('-d, --domain <string>', 'Company domain')
+  .requiredOption('-P, --patterns <strings...>', 'Patterns to generate emails with');
 
 program.parse();
 
-async function startBrowser(options = { headless: true }) {
+// global variable to store results
+const PARSED_PROFILES = [];
+const verbose = program.opts().verbose;
+
+async function startBrowser(options = { headless: true, slowMo: 0 }, proxy) {
+  const args = [];
+  if (proxy) {
+    args.push(`--proxy-server=${proxy}`);
+  }
+  options.args = args;
   const browser = await puppeteer.launch(options);
   const page = await browser.newPage();
-  return {browser, page};
+  await page.setCacheEnabled(false);
+  return { browser, page };
 }
 
 async function closeBrowser(browser) {
   return browser.close();
 }
 
+// Output results
+function output(profiles, format, file) {
+  if (format === 'csv') {
+    try {
+      const parser = new CsvConverter();
+      const csv = parser.parse(profiles);
+      if (file) {
+
+      } else {
+        console.log(csv);
+      }
+    } catch(err) {
+      console.error(err);
+    }
+  } else {
+    if (file) {
+
+    } else {
+      console.log(JSON.stringify(profiles, null, 2));
+    }
+  }
+}
+
 /*
 Provide either username and password pair or cookie
 */
-async function auth({page, username, password, cookie}) {
+async function auth({ page, username, password, cookie }) {
   if (cookie) {
-    await page.setCookie({name: 'li_at', value: cookie});
+    await page.setCookie({ name: 'li_at', value: cookie });
     await page.reload();
   }
   // TODO: authenticate using username and password
@@ -189,31 +262,219 @@ async function waitForFunction(fn, timeout) {
   throw new Error('Timed out');
 }
 
-async function searchEmployeesFromCompany({page, company, timeout, url}) {
+// Infer a person's email based on name, surname/middlenames and pattern
+async function inferEmails(name, otherNames, domain, patterns) {
+  if (!name) {
+    throw new Error(`Value error: name`);
+  } 
+  if (!otherNames) {
+    throw new Error(`Value error: otherNames`);
+  }
+  // TODO: make this work
+  // assert(domain != undefined);
+  // assert(patterns != undefined);
+  // assert(Array.isArray(otherNames));
+  // assert(Array.isArray(patterns));
+  const sup_patterns = ['first', 'last', 'first.last', 'flast'];
+
+  let usernames = [];
+  otherNames = otherNames.map((s) => s.replace(/\.+$/, '')).filter((s) => s.length > 0);
+  for (pattern of patterns) {
+    switch (pattern) {
+      case 'first':
+        usernames.push(name);
+        break;
+      case 'last':
+        usernames.push(...otherNames);
+        break;
+      case 'first.last':
+        usernames.push(...otherNames.map((other) => `${name}.${other}`));
+        break;
+      case 'flast':
+        usernames.push(...otherNames.map((other) => `${name[0]}${other}`));
+        break;
+      default:
+        console.warn(`Skipping unsupported pattern ${pattern}`);
+    }
+  }
+  usernames = usernames.map((s) => normalize(s));
+  return usernames.map((s) => `${s}@${domain}`).join("|");
+}
+
+function capitalizeFirstLetter(string) {
+  if (!string || string.length === 0) {
+    return string;
+  }
+  return string[0].toUpperCase() + string.slice(1).toLowerCase();
+}
+
+function titleCase(string) {
+  if (!string || string.length === 0) {
+    return string;
+  }
+  return string.split(" ").map(x => capitalizeFirstLetter(x)).join(" ");
+}
+
+function getProfileTypes() {
+  const profile_types = new Map([
+    ["voyager_miniprofile", "com.linkedin.voyager.identity.shared.MiniProfile"],
+    ["voyager_profile", "com.linkedin.voyager.dash.identity.profile.Profile"],
+    ["voyager_entityresult", "com.linkedin.voyager.dash.search.EntityResultViewModel"]
+  ]);
+  return profile_types;
+}
+
+// Parse LinkedIn profile as found in JSON responses into an containing only properties of interest
+async function parseProfile(entry, ptype, domain, patterns) {
+  if (!entry) {
+    throw new Error('invalid entry');
+  }
+  const profile_types = getProfileTypes();
+  if (!Array.from(profile_types.values()).includes(ptype)) {
+    throw new Error(`Unsupported profile type ${ptype}`);
+  }
+  let fullName;
+  // com.linkedin.voyager.dash.search.EntityResultViewModel
+  if (ptype === profile_types.get('voyager_entityresult')) {
+    fullName = entry.title.text;
+    if (!fullName) {
+      throw new Error(`Full name not found for ${ptype}`);
+    }
+    fullName = fullName.toLowerCase();
+  } else {
+    // use regex to avoid garbage like (...) or [..] at the end of name
+    // it won't work if name starts with something else
+    const regex = /^[^\[\]{}()\'"\-|]+/;
+    const test = entry.firstName + ' ' + entry.lastName;
+    fullName = test.match(regex);
+    if (fullName === null) {
+      console.warn(`Could not parse full name from ${entry.firstName} ${entry.lastName}`);
+      throw new Error("Unable to parse full name");
+    }
+    fullName = fullName[0].toLowerCase();
+  }
+  // ignore anonymous linkedin member
+  if (fullName === 'linkedin member') {
+    throw new Error('Anonymous Linkedin Member');
+  }
+  // remove unwanted characters
+  fullName = fullName.replace(/\._!,;/g, '');
+  fullName = fullName.replace(/ +/g, ' ');
+  name_fields = fullName.split(' ');
+  name_fields = name_fields.filter((s) => (s !== '' && s !== ' '));
+  if (name_fields.length < 1) {
+    throw new Error('Parsed full name is too short');
+  }
+
+  person = {};
+  person.fullName = titleCase(fullName);
+  person.firstName = titleCase(name_fields[0]);
+  person.lastName = titleCase(name_fields.at(name_fields.length - 1));
+
+  otherNames = name_fields.slice(1);
+  // remove some elements
+  filter_words = ['da', 'de', 'di', 'do', 'das', 'dos'];
+  otherNames = otherNames.filter((s) => !filter_words.includes(s));
+  // also, remove single letter names
+  otherNames = otherNames.filter((s) => s.length > 1);
+
+  person.publicIdentifier = entry.publicIdentifier;
+  if (ptype === profile_types.get('voyager_miniprofile')) {
+    person.occupation = entry.occupation ? entry.occupation.replace("\n", ". ") : '';
+  } else if (ptype === profile_types.get('voyager_profile')) {
+    person.occupation = entry.headline ? entry.headline.replace("\n", ". ") : '';
+  } else if (ptype === supported_type.get('voyager_entityresult')) {
+    if (entry.summary && entry.summary.text) {
+      person.occupation = entry.summary.text;
+    } else if (entry.primarySubtitle && entry.primarySubtitle.text) {
+      person.occupation = entry.primarySubtitle.text;
+    }
+    // Example: "Current: system analyst at Company"
+    if (person.occupation.startswith("Current: ")) {
+      person.occupation = person.occupation.split(' ').slice(1).join(' ');
+    }
+  }
+  if (verbose) console.log(JSON.stringify(person));
+
+  try {
+    person.email = await inferEmails(name_fields[0], otherNames, domain, patterns);
+  } catch (err) {
+    console.warn(`Unable to infer email from ${name_fields.join(' ')}`);
+    person.email = '';
+  }
+  return person;
+}
+
+async function parseResponse(response, opts) {
+  const domain = opts.domain;
+  const patterns = opts.patterns;
+  const profile_types = getProfileTypes();
+  let person;
+  let result = [];
+  if (!response.included) {
+    if (verbose) console.log('Object "included" not found in response');
+    return result;
+  }
+  for (const entry of response.included) {
+    if (!entry.$type) {
+      if (verbose) console.log('Object "$type" not found in response');
+      continue;
+    }
+    if (!Array.from(profile_types.values()).includes(entry.$type)) {
+      if (verbose) console.log(`$type ${entry.$type} not supported`);
+      continue;
+    } else if (verbose) {
+      console.log(`Found supported $type ${entry.$type}`);
+    }
+    // get profile information
+    try {
+      person = await parseProfile(entry, entry.$type, domain, patterns);
+      result.push(person);
+    } catch (err) {
+      console.warn(err);
+      continue;
+    }
+  }
+  return result;
+}
+
+function setupInterceptions({ page, fn, fn_opts } = {}) {
+  if (page === undefined) {
+    throw new Error('page undefined');
+  }
+  page.on('response', async (response) => {
+    const request = response.request();
+    if (request.url().includes('/voyager/api/search') || request.url().includes('/voyager/api/voyagerSearchDashLazyLoadedActions')) {
+      try {
+        const data = await response.json();
+        if (fn) {
+          console.log(request.url());
+          const res = await fn(data, fn_opts);
+          PARSED_PROFILES.push(...res);
+          console.info(`Parsed ${PARSED_PROFILES.length} profiles`);
+          // the following snippet is only for debugging
+        } else {
+          console.log(request.url());
+          console.log(JSON.stringify(data, null, 2));
+        }
+      } catch (err) {
+        console.error(err);
+      }
+    }
+  })
+}
+
+async function searchEmployeesFromCompany({ page, company, timeout, url, maxpages, opts }) {
   const SEARCHBAR_SELECTOR = '.search-global-typeahead__input';
   const PEOPLE_SELECTOR = 'aria/People[role="pushbutton"]';
   const CURRENTCOMPANY_SELECTOR = 'li.search-reusables__primary-filter:nth-child(5) > div:nth-child(1) > span:nth-child(2) > button:nth-child(1)';
   const FIRSTCURRENTCOMPANY_SELECTOR = '';
+  const NEXT_SELECTOR = 'aria/Next[role="button"]';
   const targetPage = page;
   let element;
   if (url) {
-    await page.goto(url, { waitUntil: "load"});
-    try {
-      //element = await page.$$eval('aria/Next', (els) => els.map(el =>
-      //el.textContent));
-      await page.evaluate('window.scrollTo(0, document.body.scrollHeight)')
-      element = await waitForSelector(['aria/Next'], page, { timeout, visible: true });
-      await scrollIntoViewIfNeeded(element, timeout);
-      console.log("found page 2");
-      await element.click();
-    } catch (err){
-      console.log(err);
-    }
-    if (element) {
-
-    } else {
-      console.log("not found page 2 wtf!!!!");
-    }
+    setupInterceptions({ page: page, fn: parseResponse, fn_opts: { domain: opts.domain, patterns: opts.patterns } });
+    await page.goto(url, { waitUntil: "load" });
   } else {
     await page.click(SEARCHBAR_SELECTOR);
     await page.keyboard.type(company);
@@ -225,53 +486,35 @@ async function searchEmployeesFromCompany({page, company, timeout, url}) {
     }
   }
 
-
-  await page.waitForTimeout(timeout);
-  //page.click('aria/Next[role="button"]');
- /*  {
-    const NEXT_SELECTOR = "aria/Next[role=\"button\"]";
-    const targetPage = page;
-    while (true) {
-      try {
-        //await page.repl();
-        for (const frame of page.frames()) {
-          try {
-            const element = await frame.waitForSelector(NEXT_SELECTOR);
-            if (element) {
-              console.log('found!');
-              element.click();
-              break;
-            } else {
-              console.log(frame + "not found");
-            }
-          } catch {
-          }
-        }
-      } catch (err) {
-        console.log(err);
-        break;
-      }
-      console.log('clicked');
+  // scrap all available pages
+  let parsed = 1;
+  while (parsed < maxpages) {
+    try {
+      element = await waitForSelector([NEXT_SELECTOR], targetPage, { timeout, visible: false });
+      await scrollIntoViewIfNeeded(element, timeout);
       await element.click();
+    } catch (err) {
+      break;
     }
-  } */
-
+    parsed++;
+  }
 }
 
 async function scrap(opts) {
   const url = 'https://linkedin.com';
-  const timeout = 10000;
-  const { browser, page } = await startBrowser({ headless: false });
+  const timeout = opts.timeout;
+  const { browser, page } = await startBrowser({ headless: !opts.headful, slowMo: opts.slowMo }, opts.proxy);
   page.setDefaultTimeout(timeout);
   await page.goto(url);
-  await auth({page: page, username: opts.username, password: opts.password, cookie: opts.cookie});
-  await searchEmployeesFromCompany({page: page, company: opts.search, timeout: timeout, url: opts.url});
-  await page.waitForTimeout(5000);
+  await auth({ page: page, username: opts.username, password: opts.password, cookie: opts.cookie });
+  await searchEmployeesFromCompany({ page: page, company: opts.search, timeout: timeout, url: opts.url, maxpages: opts.maxpages, opts: { domain: opts.domain, patterns: opts.patterns } });
+  await page.waitForTimeout(1000);
   await closeBrowser(browser);
 }
 
 (async () => {
   await scrap(program.opts());
+  console.log(JSON.stringify(PARSED_PROFILES, null, 2));
 })();
 
 
