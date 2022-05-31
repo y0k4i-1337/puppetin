@@ -11,7 +11,8 @@ puppeteer.use(StealthPlugin())
 const { Command } = require('commander');
 const program = new Command();
 
-const { CsvConverter } = require('json2csv');
+const { parse } = require('json2csv');
+const fs = require('fs');
 
 String.prototype.removeDiacritics = function () {
   var diacritics = [
@@ -56,7 +57,7 @@ program
   .option('-t, --timeout <milliseconds>', 'Set global timeout', 30000)
   .option('-v, --verbose', 'Show detailed information', false)
   .option('-f, --format <string>', 'Output format (json, csv)', 'json')
-  .option('-o, --output <string>', 'Output file')
+  .option('-o, --output <string>', 'Output file (without extension')
   .option('--headful', 'Launch browser in headful mode', false)
   .option('--slowMo <milliseconds>', 'Slows down Puppeteer operations by the specified amount of time')
   .requiredOption('-s, --search <string>', 'search string')
@@ -89,10 +90,9 @@ async function closeBrowser(browser) {
 function output(profiles, format, file) {
   if (format === 'csv') {
     try {
-      const parser = new CsvConverter();
-      const csv = parser.parse(profiles);
+      const csv = parse(profiles);
       if (file) {
-
+        fs.writeFileSync(`${file}.csv`, csv, 'utf-8');
       } else {
         console.log(csv);
       }
@@ -101,7 +101,7 @@ function output(profiles, format, file) {
     }
   } else {
     if (file) {
-
+      fs.writeFileSync(`${file}.json`, JSON.stringify(profiles, null, 2), 'utf-8');
     } else {
       console.log(JSON.stringify(profiles, null, 2));
     }
@@ -512,19 +512,11 @@ async function scrap(opts) {
   await closeBrowser(browser);
 }
 
+////////////////////////////////
+// MAIN PROGRAM
+////////////////////////////////
 (async () => {
   await scrap(program.opts());
-  console.log(JSON.stringify(PARSED_PROFILES, null, 2));
+  output(PARSED_PROFILES, program.opts().format, program.opts().output);
+  //console.log(JSON.stringify(PARSED_PROFILES, null, 2));
 })();
-
-
-// // puppeteer usage as normal
-// puppeteer.launch({ headless: true }).then(async browser => {
-//   console.log('Running tests..')
-//   const page = await browser.newPage()
-//   await page.goto('https://bot.sannysoft.com')
-//   await page.waitForTimeout(5000)
-//   await page.screenshot({ path: 'testresult.png', fullPage: true })
-//   await browser.close()
-//   console.log(`All done, check the screenshot. ✨`)
-// })
