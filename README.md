@@ -76,7 +76,7 @@ Scrap current employees from Contoso in headful mode, use `first.last` as e-mail
 as many information as possible, slow down operations by 250ms, exclude my
 public identifier (myuser) from results and save output as JSON.
 ```
-node puppetin.js -d contoso.com -P first.last -u 'https://www.linkedin.com/search/results/people/?currentCompany=%5B%2211452158%22%5D&keywords=contoso&origin=FACETED_SEARCH&sid=5q5' -c AQ... --slowMo 250 -v -E myuser -debug --headful -o results.json
+node puppetin.js -d contoso.com -P first.last -u 'https://www.linkedin.com/search/results/people/?currentCompany=%5B%2211452158%22%5D&keywords=contoso&origin=FACETED_SEARCH&sid=5q5' -c AQ... --slowMo 250 -v -E myuser --debug --headful -o results.json
 ```
 
 ## License
