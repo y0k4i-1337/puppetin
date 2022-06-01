@@ -48,8 +48,8 @@ program
   .version('0.1.0');
 
 program
-  .option('-u, --username <string>', 'username used to authenticate')
-  .option('-p, --password <string>', 'password used to authenticate')
+  //.option('-l, --login <string>', 'username used to authenticate')
+  //.option('-p, --password <string>', 'password used to authenticate')
   .option('-c, --cookie <string>', 'provide li_at cookie instead of credentials')
   .option('-u, --url <string>', 'Custom URL from where to start scraping')
   .option('-m, --maxpages <int>', 'Maximum number of pages to scrap', 100)
@@ -60,15 +60,17 @@ program
   .option('-o, --output <string>', 'Output file (without extension')
   .option('--headful', 'Launch browser in headful mode', false)
   .option('--slowMo <milliseconds>', 'Slows down Puppeteer operations by the specified amount of time')
-  .requiredOption('-s, --search <string>', 'search string')
+  .option('--debug', 'Show debug information')
+  .option('-s, --search <string>', 'Search string')
   .requiredOption('-d, --domain <string>', 'Company domain')
   .requiredOption('-P, --patterns <strings...>', 'Patterns to generate emails with');
 
 program.parse();
 
 // global variable to store results
-const PARSED_PROFILES = [];
+const PARSED_PROFILES = new Map();
 const verbose = program.opts().verbose;
+const debug = program.opts().debug ? true : false;
 
 async function startBrowser(options = { headless: true, slowMo: 0 }, proxy) {
   const args = [];
@@ -266,7 +268,7 @@ async function waitForFunction(fn, timeout) {
 async function inferEmails(name, otherNames, domain, patterns) {
   if (!name) {
     throw new Error(`Value error: name`);
-  } 
+  }
   if (!otherNames) {
     throw new Error(`Value error: otherNames`);
   }
@@ -324,12 +326,26 @@ function getProfileTypes() {
   return profile_types;
 }
 
+// The following types have no interesting information
+function getExcludedProfileTypes() {
+  const excluded_ptypes = [
+    "com.linkedin.voyager.dash.search.LazyLoadedActions",
+    "com.linkedin.voyager.dash.search.FeedbackCard",
+  ];
+  return excluded_ptypes;
+}
+
 // Parse LinkedIn profile as found in JSON responses into an containing only properties of interest
 async function parseProfile(entry, ptype, domain, patterns) {
   if (!entry) {
     throw new Error('invalid entry');
   }
   const profile_types = getProfileTypes();
+  const excluded_types = getExcludedProfileTypes();
+
+  if (excluded_types.includes(ptype)) {
+    return null;
+  }
   if (!Array.from(profile_types.values()).includes(ptype)) {
     throw new Error(`Unsupported profile type ${ptype}`);
   }
@@ -342,12 +358,16 @@ async function parseProfile(entry, ptype, domain, patterns) {
     }
     fullName = fullName.toLowerCase();
   } else {
+    // if names not found, this is probably an invalid entry
+    if (!entry.firstName && !entry.lastName) {
+      throw new Error(`Full name not found for ${ptype}`);
+    }
     // use regex to avoid garbage like (...) or [..] at the end of name
     // it won't work if name starts with something else
     const regex = /^[^\[\]{}()\'"\-|]+/;
     const test = entry.firstName + ' ' + entry.lastName;
     fullName = test.match(regex);
-    if (fullName === null) {
+    if (fullName === undefined || fullName === null) {
       console.warn(`Could not parse full name from ${entry.firstName} ${entry.lastName}`);
       throw new Error("Unable to parse full name");
     }
@@ -378,19 +398,33 @@ async function parseProfile(entry, ptype, domain, patterns) {
   // also, remove single letter names
   otherNames = otherNames.filter((s) => s.length > 1);
 
-  person.publicIdentifier = entry.publicIdentifier;
+  person.publicIdentifier = entry.publicIdentifier ? entry.publicIdentifier : `autogen:${fullName.toLowerCase()}`;
+  if (entry.publicIdentifier) {
+    person.publicIdentifier = entry.publicIdentifier;
+  } else if (entry.navigationUrl) {
+    m = entry.navigationUrl.match(/www.linkedin.com\/in\/(?<identifier>.+)\?/);
+    if (m) {
+      person.publicIdentifier = m.groups.identifier;
+    }
+  }
+  if (!person.publicIdentifier || person.publicIdentifier === '') {
+    person.publicIdentifier = `autogen:${fullName.toLowerCase().replace(/ /g, '-')}`;
+  }
+
   if (ptype === profile_types.get('voyager_miniprofile')) {
     person.occupation = entry.occupation ? entry.occupation.replace("\n", ". ") : '';
   } else if (ptype === profile_types.get('voyager_profile')) {
     person.occupation = entry.headline ? entry.headline.replace("\n", ". ") : '';
-  } else if (ptype === supported_type.get('voyager_entityresult')) {
+  } else if (ptype === profile_types.get('voyager_entityresult')) {
     if (entry.summary && entry.summary.text) {
       person.occupation = entry.summary.text;
     } else if (entry.primarySubtitle && entry.primarySubtitle.text) {
       person.occupation = entry.primarySubtitle.text;
+    } else {
+      person.occupation = '';
     }
     // Example: "Current: system analyst at Company"
-    if (person.occupation.startswith("Current: ")) {
+    if (person.occupation.startsWith("Current: ")) {
       person.occupation = person.occupation.split(' ').slice(1).join(' ');
     }
   }
@@ -409,27 +443,35 @@ async function parseResponse(response, opts) {
   const domain = opts.domain;
   const patterns = opts.patterns;
   const profile_types = getProfileTypes();
+  const excluded_types = getExcludedProfileTypes();
   let person;
-  let result = [];
+  const result = new Map();
   if (!response.included) {
     if (verbose) console.log('Object "included" not found in response');
-    return result;
+    return null;
   }
   for (const entry of response.included) {
     if (!entry.$type) {
       if (verbose) console.log('Object "$type" not found in response');
       continue;
     }
+    if (excluded_types.includes(entry.$type)) {
+      continue;
+    }
     if (!Array.from(profile_types.values()).includes(entry.$type)) {
       if (verbose) console.log(`$type ${entry.$type} not supported`);
+      if (debug) console.log(JSON.stringify(entry));
       continue;
-    } else if (verbose) {
-      console.log(`Found supported $type ${entry.$type}`);
+    } else {
+      if (verbose) console.log(`Found supported $type ${entry.$type}`);
+      if (debug) console.log(JSON.stringify(entry));
     }
     // get profile information
     try {
       person = await parseProfile(entry, entry.$type, domain, patterns);
-      result.push(person);
+      if (person && person != null) {
+        result.set(person.publicIdentifier, person);
+      }
     } catch (err) {
       console.warn(err);
       continue;
@@ -438,20 +480,23 @@ async function parseResponse(response, opts) {
   return result;
 }
 
-function setupInterceptions({ page, fn, fn_opts } = {}) {
+async function setupInterceptions({ page, fn, fn_opts } = {}) {
   if (page === undefined) {
     throw new Error('page undefined');
   }
   page.on('response', async (response) => {
     const request = response.request();
-    if (request.url().includes('/voyager/api/search') || request.url().includes('/voyager/api/voyagerSearchDashLazyLoadedActions')) {
+    //if (request.url().includes('/voyager/api/search') ||
+    //request.url().includes('/voyager/api/voyagerSearchDashLazyLoadedActions'))
+    //{
+    if (request.url().includes('/voyager/api/search')) {
       try {
         const data = await response.json();
         if (fn) {
           console.log(request.url());
           const res = await fn(data, fn_opts);
-          PARSED_PROFILES.push(...res);
-          console.info(`Parsed ${PARSED_PROFILES.length} profiles`);
+          res.forEach((value, key) => PARSED_PROFILES.set(key, value));
+          console.info(`Parsed ${PARSED_PROFILES.size} profiles`);
           // the following snippet is only for debugging
         } else {
           console.log(request.url());
@@ -470,17 +515,60 @@ async function searchEmployeesFromCompany({ page, company, timeout, url, maxpage
   const CURRENTCOMPANY_SELECTOR = 'li.search-reusables__primary-filter:nth-child(5) > div:nth-child(1) > span:nth-child(2) > button:nth-child(1)';
   const FIRSTCURRENTCOMPANY_SELECTOR = '';
   const NEXT_SELECTOR = 'aria/Next[role="button"]';
-  const targetPage = page;
+  const PREVIOUS_SELECTOR = 'aria/Previous[role="button"]';
   let element;
   if (url) {
-    setupInterceptions({ page: page, fn: parseResponse, fn_opts: { domain: opts.domain, patterns: opts.patterns } });
     await page.goto(url, { waitUntil: "load" });
+    // have to do this to trigger api endpoint requests
+    await page.evaluate(() => new Promise((resolve) => {
+      let scrollTop = -1;
+      const interval = setInterval(() => {
+        window.scrollBy(0, 100);
+        if (document.documentElement.scrollTop !== scrollTop) {
+          scrollTop = document.documentElement.scrollTop;
+          return;
+        }
+        clearInterval(interval);
+        resolve();
+      }, 10);
+    }));
+    element = await waitForSelector([NEXT_SELECTOR], page, { timeout , visible: true});
+    //await scrollIntoViewIfNeeded(element, timeout);
+    await element.click();
+    try {
+      await page.waitForNetworkIdle({ timeout: timeout });
+    } catch (err) {
+
+    }
+    // now we can intercept
+    await setupInterceptions({ page: page, fn: parseResponse, fn_opts: { domain: opts.domain, patterns: opts.patterns } });
+    // go back to previous page
+    try {
+      await page.waitForNetworkIdle({ timeout: timeout });
+    } catch (err) {
+
+    }
+    await page.evaluate(() => new Promise((resolve) => {
+      let scrollTop = -1;
+      const interval = setInterval(() => {
+        window.scrollBy(0, 100);
+        if (document.documentElement.scrollTop !== scrollTop) {
+          scrollTop = document.documentElement.scrollTop;
+          return;
+        }
+        clearInterval(interval);
+        resolve();
+      }, 10);
+    }));
+    element = await waitForSelector([PREVIOUS_SELECTOR], page, { timeout, visible: true });
+    //await scrollIntoViewIfNeeded(element, timeout);
+    await element.click();
   } else {
     await page.click(SEARCHBAR_SELECTOR);
     await page.keyboard.type(company);
     await page.keyboard.press('Enter');
     {
-      element = await waitForSelectors([["aria/People[role=\"button\"]"], ["#search-reusables__filters-bar > ul > li:nth-child(1) > button"]], targetPage, { timeout, visible: true });
+      element = await waitForSelectors([["aria/People[role=\"button\"]"], ["#search-reusables__filters-bar > ul > li:nth-child(1) > button"]], page, { timeout, visible: true });
       await scrollIntoViewIfNeeded(element, timeout);
       await element.click({ offset: { x: 34.79999542236328, y: 18 } });
     }
@@ -490,7 +578,22 @@ async function searchEmployeesFromCompany({ page, company, timeout, url, maxpage
   let parsed = 1;
   while (parsed < maxpages) {
     try {
-      element = await waitForSelector([NEXT_SELECTOR], targetPage, { timeout, visible: false });
+      await page.evaluate(() => new Promise((resolve) => {
+        let scrollTop = -1;
+        const interval = setInterval(() => {
+          window.scrollBy(0, 100);
+          if (document.documentElement.scrollTop !== scrollTop) {
+            scrollTop = document.documentElement.scrollTop;
+            return;
+          }
+          clearInterval(interval);
+          resolve();
+        }, 10);
+      }));
+      try {
+      await page.waitForNetworkIdle({ timeout: timeout });
+      } catch (err) {}
+      element = await waitForSelector([NEXT_SELECTOR], page, { timeout, visible: true });
       await scrollIntoViewIfNeeded(element, timeout);
       await element.click();
     } catch (err) {
@@ -515,8 +618,12 @@ async function scrap(opts) {
 ////////////////////////////////
 // MAIN PROGRAM
 ////////////////////////////////
+if (debug) { console.log(program.opts()); }
+if (!program.opts().url && !program.opts().search) {
+  console.error('Error: Either URL or search term should be provided');
+  process.exit(1);
+}
 (async () => {
   await scrap(program.opts());
-  output(PARSED_PROFILES, program.opts().format, program.opts().output);
-  //console.log(JSON.stringify(PARSED_PROFILES, null, 2));
+  output(Array.from(PARSED_PROFILES.values()), program.opts().format, program.opts().output);
 })();
