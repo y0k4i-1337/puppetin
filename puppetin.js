@@ -45,7 +45,7 @@ function normalize(s) {
 program
 .name('puppetin')
 .description('Scrap LinkedIn profiles')
-.version('0.1.0');
+.version('0.1.1');
 
 program
 //.option('-l, --login <string>', 'username used to authenticate')
