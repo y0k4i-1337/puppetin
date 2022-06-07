@@ -68,6 +68,7 @@ e-mails:
   - last (use only surname)
   - first.last (name.surname)
   - flast (name first char followed by surname)
+  - firstl (name followed by surname first char)
 
 
 ## Examples

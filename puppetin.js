@@ -43,28 +43,28 @@ function normalize(s) {
 }
 
 program
-.name('puppetin')
-.description('Scrap LinkedIn profiles')
-.version('0.1.1');
+    .name('puppetin')
+    .description('Scrap LinkedIn profiles')
+    .version('0.1.1');
 
 program
-//.option('-l, --login <string>', 'username used to authenticate')
-//.option('-p, --password <string>', 'password used to authenticate')
-.option('-c, --cookie <string>', 'provide li_at cookie instead of credentials')
-.option('-u, --url <string>', 'Custom URL from where to start scraping')
-.option('-m, --maxpages <int>', 'Maximum number of pages to scrap. If 0, scrap all available pages', 0)
-.option('-x, --proxy <host:port>', 'Send requests through proxy')
-.option('-t, --timeout <milliseconds>', 'Set global timeout', 30000)
-.option('-v, --verbose', 'Show detailed information', false)
-.option('-f, --format <string>', 'Output format (json, csv)', 'json')
-.option('-o, --output <string>', 'Output file')
-.option('-E, --exclude <identifier...>', 'Exclude entries based on identifier')
-.option('--headful', 'Launch browser in headful mode', false)
-.option('--slowMo <milliseconds>', 'Slows down Puppeteer operations by the specified amount of time')
-.option('--debug', 'Show debug information')
-.option('-s, --search <string>', 'Search string')
-.requiredOption('-d, --domain <string>', 'Company domain')
-.requiredOption('-P, --patterns <strings...>', 'Patterns to generate emails with');
+    //.option('-l, --login <string>', 'username used to authenticate')
+    //.option('-p, --password <string>', 'password used to authenticate')
+    .option('-c, --cookie <string>', 'provide li_at cookie instead of credentials')
+    .option('-u, --url <string>', 'Custom URL from where to start scraping')
+    .option('-m, --maxpages <int>', 'Maximum number of pages to scrap. If 0, scrap all available pages', 0)
+    .option('-x, --proxy <host:port>', 'Send requests through proxy')
+    .option('-t, --timeout <milliseconds>', 'Set global timeout', 30000)
+    .option('-v, --verbose', 'Show detailed information', false)
+    .option('-f, --format <string>', 'Output format (json, csv)', 'json')
+    .option('-o, --output <string>', 'Output file')
+    .option('-E, --exclude <identifier...>', 'Exclude entries based on identifier')
+    .option('--headful', 'Launch browser in headful mode', false)
+    .option('--slowMo <milliseconds>', 'Slows down Puppeteer operations by the specified amount of time')
+    .option('--debug', 'Show debug information')
+    .option('-s, --search <string>', 'Search string')
+    .requiredOption('-d, --domain <string>', 'Company domain')
+    .requiredOption('-P, --patterns <strings...>', 'Patterns to generate emails with');
 
 program.parse();
 
@@ -99,7 +99,7 @@ function output(profiles, format, file) {
             } else {
                 console.log(csv);
             }
-        } catch(err) {
+        } catch (err) {
             console.error(err);
         }
     } else {
@@ -285,19 +285,22 @@ async function inferEmails(name, otherNames, domain, patterns) {
     for (pattern of patterns) {
         switch (pattern) {
             case 'first':
-            usernames.push(name);
-            break;
+                usernames.push(name);
+                break;
             case 'last':
-            usernames.push(...otherNames);
-            break;
+                usernames.push(...otherNames);
+                break;
             case 'first.last':
-            usernames.push(...otherNames.map((other) => `${name}.${other}`));
-            break;
+                usernames.push(...otherNames.map((other) => `${name}.${other}`));
+                break;
             case 'flast':
-            usernames.push(...otherNames.map((other) => `${name[0]}${other}`));
-            break;
+                usernames.push(...otherNames.map((other) => `${name[0]}${other}`));
+                break;
+            case 'firstl':
+                usernames.push(...otherNames.map((other) => `${name}${other[0]}`));
+                break;
             default:
-            console.warn(`Skipping unsupported pattern ${pattern}`);
+                console.warn(`Skipping unsupported pattern ${pattern}`);
         }
     }
     usernames = usernames.map((s) => normalize(s));
@@ -362,7 +365,7 @@ async function parseProfile(entry, ptype, domain, patterns, exclude) {
         if (!entry.firstName && !entry.lastName) {
             throw new Error(`Full name not found for ${ptype}`);
         }
-        fullName = entry.firstName + ' ' + entry.lastName;  
+        fullName = entry.firstName + ' ' + entry.lastName;
     }
     // use regex to avoid garbage like (...) or [..] at the end of name
     // it won't work if name starts with something else
@@ -540,7 +543,7 @@ async function searchEmployeesFromCompany({ page, company, timeout, url, maxpage
                 resolve();
             }, 10);
         }));
-        element = await waitForSelector([NEXT_SELECTOR], page, { timeout , visible: true});
+        element = await waitForSelector([NEXT_SELECTOR], page, { timeout, visible: true });
         //await scrollIntoViewIfNeeded(element, timeout);
         await element.click();
         try {
